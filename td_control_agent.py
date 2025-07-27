@@ -11,173 +11,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
-def state_to_tensor(state, env):
-    """
-    Converts the state dictionary into a Pytorch tensor (1, C, H, W).
-    """
-    rows, cols, num_crates = env.rows, env.cols, env.num_crates
-    
-    # We have 4 channels in C: 0=active crate coords,  1=active goal coords,
-    #                          2=queued crates coords, 3=frozen crate coords (i.e. finished)
-    tensor = torch.zeros((4, rows, cols))
-    
-    # 0
-    active_id = state['active_crate_id']
-    active_pos = state['crate_positions'][active_id]
-    tensor[0, active_pos[0], active_pos[1]] = 1
-    
-    # 1
-    goal_pos = env.goal_positions[active_id]
-    tensor[1, goal_pos[0], goal_pos[1]] = 1
-
-    # 2 & 3
-    for i in range(num_crates):
-        if i == active_id:
-            continue
-        
-        crate_pos = state['crate_positions'][i]
-        # If the crate is frozen on its goal: channel 3
-        if list(crate_pos) == env.goal_positions[i]:        # need to use "list" because crate_pos == [0 0] but we want [0,0]
-             tensor[3, crate_pos[0], crate_pos[1]] = 1
-        # Else, it is waiting for its turn: channel 2
-        else:
-             tensor[2, crate_pos[0], crate_pos[1]] = 1
-            
-    return tensor.unsqueeze(0) # Unsqueeze adds a batch dimension for the NN (1, C, H, W)
-
-class ReplayBuffer():
-    def __init__(self, capacity):
-        self.memory = deque([], maxlen=capacity)    # deques are more efficient than lists if appending from the left
-
-    def push(self, *args):
-        """Saves a transition"""
-        self.memory.append(Transition(*args))
-
-    def sample(self, batch_size):
-        """Samples a batch of transitions"""
-        return random.sample(self.memory, batch_size)
-
-    def __len__(self):
-        return len(self.memory)
-
-class QNetwork(nn.Module):
-    def __init__(self, h, w, n_actions):
-        super(QNetwork, self).__init__()
-        # Input: 4 channels
-        self.conv1 = nn.Conv2d(4, 16, kernel_size=3, stride=1, padding=1)
-        self.conv2 = nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=1)
-        
-        # Calculates the output dimension after a single convolution. The formula is:
-        # floor[ (size - kernel + 2*padding) / stride ] + 1
-        def conv2d_size_out(size, kernel_size=3, stride=1, padding=1):
-            return (size - kernel_size + 2 * padding) // stride + 1
-        
-        convw = conv2d_size_out(conv2d_size_out(w))     # Two calls since we apply two convolutions
-        convh = conv2d_size_out(conv2d_size_out(h))
-        linear_input_size = convw * convh * 32
-        
-        self.fc1 = nn.Linear(linear_input_size, 256)
-        self.fc2 = nn.Linear(256, n_actions)
-
-    def forward(self, x):
-        x = F.relu(self.conv1(x))
-        x = F.relu(self.conv2(x))
-        x = x.view(x.size(0), -1) # Flatten
-        x = F.relu(self.fc1(x))
-        return self.fc2(x)
-
-
-class DQN_Agent():
-    def __init__(self, env, gamma, epsilon_start, epsilon_end, epsilon_decay, lr, buffer_size, batch_size, device):
-        self.env = env
-        self.n_actions = env.action_space.n
-        self.gamma = gamma
-        self.epsilon = epsilon_start
-        self.epsilon_end = epsilon_end
-        self.epsilon_decay = epsilon_decay
-        self.batch_size = batch_size
-        
-        self.device = device
-
-        h, w = env.rows, env.cols
-        self.policy_net = QNetwork(h, w, self.n_actions).to(device)
-        self.target_net = QNetwork(h, w, self.n_actions).to(device)
-        self.target_net.load_state_dict(self.policy_net.state_dict())
-        self.target_net.eval() # La target network è solo per valutazione
-
-        self.optimizer = optim.Adam(self.policy_net.parameters(), lr=lr)
-        self.buffer = ReplayBuffer(buffer_size)
-
-    def select_action(self, state_tensor):
-        self.epsilon = max(self.epsilon_end, self.epsilon * self.epsilon_decay)
-
-        if random.random() < self.epsilon:
-            return torch.tensor([[random.randrange(self.n_actions)]], device=self.device, dtype=torch.long)
-        else:
-            with torch.no_grad():
-                # t.max(1) restituirà il valore massimo di ogni riga.
-                # [1] è l'indice del valore massimo, che è la nostra azione.
-                return self.policy_net(state_tensor).max(1)[1].view(1, 1)
-
-    def learn(self):
-        if len(self.buffer) < self.batch_size:
-            return # Non imparare se non ci sono abbastanza esperienze
-
-        transitions = self.buffer.sample(self.batch_size)
-        batch = Transition(*zip(*transitions))
-
-        # Converti i batch in tensori
-        state_batch = torch.cat(batch.state).to(self.device)
-        action_batch = torch.cat(batch.action).to(self.device)
-        reward_batch = torch.cat(batch.reward).to(self.device)
-        next_state_batch = torch.cat(batch.next_state).to(self.device)
-        done_batch = torch.cat(batch.done).to(self.device)
-
-        # Calcola Q(s, a) - i valori che la rete ha predetto
-        q_values = self.policy_net(state_batch).gather(1, action_batch)
-
-        # Calcola V(s') per gli stati successivi usando la target_net
-        next_q_values = self.target_net(next_state_batch).max(1)[0].detach()
-        
-        # Calcola il valore Q atteso (target)
-        # Se lo stato è terminale (done=True), il suo valore futuro è 0
-        expected_q_values = (next_q_values * self.gamma * (1 - done_batch)) + reward_batch
-
-        loss = F.smooth_l1_loss(q_values, expected_q_values.unsqueeze(1))
-
-        # Gradient descent
-        self.optimizer.zero_grad()
-        loss.backward()
-        for param in self.policy_net.parameters():
-            param.grad.data.clamp_(-1, 1)
-        self.optimizer.step()
-
-    def update_target_net(self):
-        self.target_net.load_state_dict(self.policy_net.state_dict())
-
-    def get_q_values(self, state):
-        with torch.no_grad():
-            # Converte lo stato in tensore e lo passa alla rete
-            state_tensor = state_to_tensor(state, self.env).to(self.device)
-            # Restituisce i q-values come array numpy
-            q_values = self.policy_net(state_tensor)
-            return q_values.cpu().numpy()[0]
-        
-    def get_best_action(self, state):
-        with torch.no_grad():
-            state_tensor = state_to_tensor(state, self.env).to(self.device)
-            q_values = self.policy_net(state_tensor)
-            return q_values.max(1)[1].item()
-
-
-
-
-
-
-
-
-
-
+###### TD Control Agent-related ######
 
 def state_to_key(state):
     """
@@ -282,7 +116,170 @@ class TDControl_Agent():
         
         best_action = np.argmax(q_vals)
         return best_action
+
+
+###### DQN Agent-related ######
+
+def state_to_tensor(state, env):
+    """
+    Converts the state dictionary into a Pytorch tensor (1, C, H, W).
+    """
+    rows, cols, num_crates = env.rows, env.cols, env.num_crates
     
+    # We have 4 channels in C: 0=active crate coords,  1=active goal coords,
+    #                          2=queued crates coords, 3=frozen crate coords (i.e. finished)
+    tensor = torch.zeros((4, rows, cols))
+    
+    # 0
+    active_id = state['active_crate_id']
+    active_pos = state['crate_positions'][active_id]
+    tensor[0, active_pos[0], active_pos[1]] = 1
+    
+    # 1
+    goal_pos = env.goal_positions[active_id]
+    tensor[1, goal_pos[0], goal_pos[1]] = 1
+
+    # 2 & 3
+    for i in range(num_crates):
+        if i == active_id:
+            continue
+        
+        crate_pos = state['crate_positions'][i]
+        # If the crate is frozen on its goal: channel 3
+        if list(crate_pos) == env.goal_positions[i]:        # need to use "list" because crate_pos == [0 0] but we want [0,0]
+             tensor[3, crate_pos[0], crate_pos[1]] = 1
+        # Else, it is waiting for its turn: channel 2
+        else:
+             tensor[2, crate_pos[0], crate_pos[1]] = 1
+            
+    return tensor.unsqueeze(0) # Unsqueeze adds a batch dimension for the NN (1, C, H, W)
+
+class ReplayBuffer():
+    def __init__(self, capacity):
+        self.memory = deque([], maxlen=capacity)    # deques are more efficient than lists if appending from the left
+
+    def push(self, *args):
+        # Saves a transition
+        self.memory.append(Transition(*args))
+
+    def sample(self, batch_size):
+        # Samples a batch of transitions
+        return random.sample(self.memory, batch_size)
+
+    def __len__(self):
+        return len(self.memory)
+
+class QNetwork(nn.Module):
+    def __init__(self, h, w, n_actions):
+        super(QNetwork, self).__init__()
+        # Input: 4 channels
+        self.conv1 = nn.Conv2d(4, 16, kernel_size=3, stride=1, padding=1)
+        self.conv2 = nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=1)
+        
+        # Calculates the output dimension after a single convolution. The formula is:
+        # floor[ (size - kernel + 2*padding) / stride ] + 1
+        def conv2d_size_out(size, kernel_size=3, stride=1, padding=1):
+            return (size - kernel_size + 2 * padding) // stride + 1
+        
+        convw = conv2d_size_out(conv2d_size_out(w))     # Two calls since we apply two convolutions
+        convh = conv2d_size_out(conv2d_size_out(h))
+        linear_input_size = convw * convh * 32
+        
+        self.fc1 = nn.Linear(linear_input_size, 256)
+        self.fc2 = nn.Linear(256, n_actions)
+
+    def forward(self, x):
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = x.view(x.size(0), -1) # Flatten
+        x = F.relu(self.fc1(x))
+        return self.fc2(x)
+
+
+class DQN_Agent():
+    def __init__(self, env, gamma, epsilon_start, epsilon_end, epsilon_decay, lr, buffer_size, batch_size, device):
+        self.env = env
+        self.n_actions = env.action_space.n
+        self.gamma = gamma
+        self.epsilon = epsilon_start
+        self.epsilon_end = epsilon_end
+        self.epsilon_decay = epsilon_decay
+        self.batch_size = batch_size
+        
+        self.device = device
+
+        h, w = env.rows, env.cols
+        self.policy_net = QNetwork(h, w, self.n_actions).to(device)
+        self.target_net = QNetwork(h, w, self.n_actions).to(device)
+        self.target_net.load_state_dict(self.policy_net.state_dict())
+        self.target_net.eval() # Target network is for evaluation only
+
+        self.optimizer = optim.Adam(self.policy_net.parameters(), lr=lr)
+        self.buffer = ReplayBuffer(buffer_size)
+
+    def select_action(self, state_tensor):
+        self.epsilon = max(self.epsilon_end, self.epsilon * self.epsilon_decay)
+
+        if random.random() < self.epsilon:
+            return torch.tensor([[random.randrange(self.n_actions)]], device=self.device, dtype=torch.long)
+        else:
+            with torch.no_grad():
+                # .max(1) gets the maximum value by row
+                # [0] is the actual value, [1] is the index of such value, i.e. our action.
+                return self.policy_net(state_tensor).max(1)[1].view(1, 1)
+
+    def learn(self):
+        if len(self.buffer) < self.batch_size:
+            return # Do not learn if the replay buffer is not full: just explore
+
+        transitions = self.buffer.sample(self.batch_size)
+        batch = Transition(*zip(*transitions))
+
+        # Convert the batches into tensors
+        state_batch = torch.cat(batch.state).to(self.device)
+        action_batch = torch.cat(batch.action).to(self.device)
+        reward_batch = torch.cat(batch.reward).to(self.device)
+        next_state_batch = torch.cat(batch.next_state).to(self.device)
+        done_batch = torch.cat(batch.done).to(self.device)
+
+        # Compute Q(s, a) values predicted by the network
+        q_values = self.policy_net(state_batch).gather(1, action_batch)
+
+        # Compute Q(s', a) using the target network
+        next_q_values = self.target_net(next_state_batch).max(1)[0].detach()
+        
+        # Compute the expected Q values with the usual formula
+        # If done=True, the value is 0
+        expected_q_values =  reward_batch + (self.gamma * next_q_values * (1 - done_batch))
+
+        # Loss and gradient descent
+        loss = F.smooth_l1_loss(q_values, expected_q_values.unsqueeze(1))
+
+        self.optimizer.zero_grad()
+        loss.backward()
+        for param in self.policy_net.parameters():
+            param.grad.data.clamp_(-1, 1)
+        self.optimizer.step()
+
+    def update_target_net(self):
+        self.target_net.load_state_dict(self.policy_net.state_dict())
+
+    def get_q_values(self, state):
+        # Get q-values from the network
+        with torch.no_grad():
+            state_tensor = state_to_tensor(state, self.env).to(self.device)
+            q_values = self.policy_net(state_tensor)
+            return q_values.cpu().numpy()[0]
+        
+    def get_best_action(self, state):
+        # Get best action from the network
+        with torch.no_grad():
+            state_tensor = state_to_tensor(state, self.env).to(self.device)
+            q_values = self.policy_net(state_tensor)
+            return q_values.max(1)[1].item()
+
+
+###### Auxiliary functions to test performance of both Agents ######
 
 def evaluate_success_rate(agent, env, num_test_episodes=100, max_steps_per_episode=100):
     """
@@ -312,16 +309,8 @@ def evaluate_success_rate(agent, env, num_test_episodes=100, max_steps_per_episo
 
 def watch_agent_perform(agent, env):
     """
-    Runs a single episode with a trained agent in deterministic mode
-    and renders each step.
-
-    Args:
-        agent: trained agent (QL or DQN).
-        env: WarehouseEnv instance.
+    Runs a single episode with a trained agent and renders each step.
     """
-    print("--- Visualizing Final Policy ---")
-    print(f"Agent: {agent.__class__.__name__}")
-
     s, _ = env.reset(seed=123)
     done = False
     episode_reward = 0
@@ -348,8 +337,8 @@ def watch_agent_perform(agent, env):
     env.render()
     
     if terminated:
-        print(f"\nSuccess. The agent sorted \nthe crates in {steps} steps.")
+        print(f"\nSuccess. The agent sorted the crates in {steps} steps.")
     else:
-        print(f"\nFailure. The agent wasn't able to sort \nthe crates in {max_steps} steps.")
+        print(f"\nFailure. The agent wasn't able to sort the crates in {max_steps} steps.")
         
     print(f"\nTotal reward: {episode_reward}")

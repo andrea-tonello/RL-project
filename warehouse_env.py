@@ -4,9 +4,9 @@ import random
 import copy
 
 class WarehouseEnv(gym.Env):
-    metadata = {"render_modes": ["human"], "render_fps": 4}
+    metadata = {"render_modes": ["human"], "render_fps": 1}
 
-    def __init__(self, rows, cols, num_crates, reward=10):
+    def __init__(self, rows, cols, num_crates, reward=20):
         super().__init__()
 
         self.rows = rows
@@ -14,11 +14,10 @@ class WarehouseEnv(gym.Env):
         self.num_crates = num_crates
         self.reward = reward
 
+        # Set the goals in column-major order
         self.goal_positions = self._fill_column_major(self.rows, self.num_crates)
 
-        # --- MODIFICA: Nuovo Observation Space ---
-        # Ora forniamo l'ID della cassa attiva e le posizioni di TUTTE le casse.
-        # Questo rende l'environment completamente osservabile.
+        # State: active crates + crate positions
         self.observation_space = gym.spaces.Dict({
             "active_crate_id": gym.spaces.Discrete(self.num_crates),
             "crate_positions": gym.spaces.Box(
@@ -29,12 +28,14 @@ class WarehouseEnv(gym.Env):
             )
         })
 
+        # 4 actions: up, down, left, right
         self.action_space = gym.spaces.Discrete(4)
 
         self.reset()
 
 
     def __len__(self):
+        # returns the theoretical state space size: C x ( (NxM)! / (NxM-C)! )
         import math
 
         C = self.num_crates
@@ -50,14 +51,14 @@ class WarehouseEnv(gym.Env):
         self.remaining_goals = copy.deepcopy(self.goal_positions)
         self.current_crate_index = 0
 
-        # Spawn all crates at once (excluding goal positions)
+    # Candidate spawn points for crates (avoid goal positions)
         spawn_candidates = [
             [i, j] for i in range(self.rows) for j in range(self.cols)
             if [i, j] not in self.goal_positions
         ]
-        all_crates = random.sample(spawn_candidates, self.num_crates)
+        all_crates = random.sample(spawn_candidates, self.num_crates) # pick spawn at random
 
-        # Assign closest crate to each goal (goal -> crate), in column-major goal order
+    # Assign closest crate to each goal (goal -> crate), in column-major goal order
         assigned_crates = set()     # just to keep track of what we have already assigned
         crate_assignments = [None] * self.num_crates
 
@@ -100,11 +101,9 @@ class WarehouseEnv(gym.Env):
 
     
     def _get_obs(self):
-        # --- MODIFICA: Nuovo metodo _get_obs ---
-        # Costruisce l'osservazione basandosi sul nuovo space.
-        # L'agente sa chi sta muovendo e dove si trovano tutte le altre casse.
+        # The actual state representation
         active_id = self.current_crate_index
-        # Gestisce il caso terminale in cui l'indice potrebbe essere fuori range
+    
         if active_id >= self.num_crates:
             active_id = self.num_crates - 1
             

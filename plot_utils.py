@@ -64,7 +64,7 @@ def plot_qvalues_slice(agent, env, fixed_context, save_path=None):
     plt.show()
 
 
-def plot_policy_slice(agent, env, fixed_context):
+def plot_policy_slice(agent, env, fixed_context, save_path=None):
     """
     Funzione universale per plottare la mappa della policy per qualsiasi agente
     che implementi il metodo get_q_values(state).
@@ -155,6 +155,9 @@ def plot_policy_slice(agent, env, fixed_context):
 
     ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', borderaxespad=0)
     plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, bbox_inches='tight', dpi=300)
 
     plt.show()
 
@@ -314,49 +317,3 @@ def plot_deltaQ(n_episodes, avg_dQ, max_dQ, interval=200, save_path=None):
         plt.savefig(save_path, bbox_inches='tight', dpi=300)
 
     plt.show()"""
-
-
-
-
-'''def plot_qvalues_V0(SARSA, env, fixed_crate_positions=None, active_crate_id=0):
-    """
-    Visualize Q-values for each action on a grid.
-    Assumes crate positions are fixed except for the active one.
-    """
-    rows, cols = env.rows, env.cols
-    action_names = ["UP", "DOWN", "LEFT", "RIGHT"]
-    fig, axes = plt.subplots(1, 4, figsize=(16, 4))
-    
-    for action in range(4):
-        grid = np.zeros((rows, cols))
-
-        for i in range(rows):
-            for j in range(cols):
-                if fixed_crate_positions is None:
-                    crate_positions = [[0, 0]] * env.num_crates
-                else:
-                    crate_positions = [list(pos) for pos in fixed_crate_positions]
-
-                crate_positions[active_crate_id] = [i, j]
-
-                if [i, j] in fixed_crate_positions:
-                    continue
-
-                state = {
-                    'active_crate_id': np.int32(active_crate_id),
-                    'crate_positions': np.array(crate_positions, dtype=np.int32)
-                }
-
-                key = state_to_key(state)
-                q_value = SARSA.Qvalues.get(key, np.zeros(4))[action]
-                grid[i, j] = q_value
-
-
-        ax = axes[action]
-        im = ax.imshow(grid, cmap='coolwarm', origin='upper')
-        ax.set_title(f"Q-values for action {action_names[action]}")
-        plt.colorbar(im, ax=ax)
-
-    plt.suptitle(f"Q-values per action for active crate A{active_crate_id+1}")
-    plt.tight_layout()
-    plt.show()'''
