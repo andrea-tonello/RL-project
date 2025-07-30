@@ -2,6 +2,13 @@ import numpy as np
 import gymnasium as gym
 import random
 import copy
+from enum import IntEnum
+
+class Actions(IntEnum):
+    UP = 0
+    DOWN = 1
+    LEFT = 2
+    RIGHT = 3
 
 class WarehouseEnv(gym.Env):
     metadata = {"render_modes": ["human"], "render_fps": 1}
@@ -29,13 +36,15 @@ class WarehouseEnv(gym.Env):
         })
 
         # 4 actions: up, down, left, right
-        self.action_space = gym.spaces.Discrete(4)
+        self.action_space = gym.spaces.Discrete(len(Actions))
 
         self.reset()
 
 
     def __len__(self):
-        # returns the theoretical state space size: C x ( (NxM)! / (NxM-C)! )
+        """
+        returns the theoretical state space size: C x ( (NxM)! / (NxM-C)! )
+        """
         import math
 
         C = self.num_crates
@@ -43,8 +52,36 @@ class WarehouseEnv(gym.Env):
 
         return C * math.perm(tiles, C)
 
+
+    def _fill_column_major(self, num_rows, num_elements):
+        """
+        Returns the indices, as a list, of the elements that are going to be filled in column-major order
+        a, b, c
+        d, e, f   ->   num_elements = 2   ->   returns [[0,0], [1,0]] (a and d)
+        g, h, i 
+        """
+        active_cols = (num_elements // num_rows) if num_elements % num_rows == 0 else (num_elements // num_rows + 1)
+        positions = [[i, j] for j in range(active_cols) for i in range(num_rows)]
+        positions = positions[:num_elements]
+        return positions
+
+
+    def _get_obs(self):
+        """
+        The state representation to be used by the agent
+        """
+        active_id = self.current_crate_index
     
-    def reset(self, seed=None, options=None):
+        if active_id >= self.num_crates:
+            active_id = self.num_crates - 1
+            
+        return {
+            'active_crate_id': np.int32(active_id),
+            'crate_positions': np.array(self.crates, dtype=np.int32)
+        }
+
+
+    def reset(self, seed=None):
         super().reset(seed=seed)
 
         self.frozen_crates = []
@@ -56,7 +93,7 @@ class WarehouseEnv(gym.Env):
             [i, j] for i in range(self.rows) for j in range(self.cols)
             if [i, j] not in self.goal_positions
         ]
-        all_crates = random.sample(spawn_candidates, self.num_crates) # pick spawn at random
+        all_crates = random.sample(spawn_candidates, self.num_crates) # pick spawns at random
 
     # Assign closest crate to each goal (goal -> crate), in column-major goal order
         assigned_crates = set()     # just to keep track of what we have already assigned
@@ -82,35 +119,6 @@ class WarehouseEnv(gym.Env):
         self.current_crate_goal = self.goal_positions[0]
 
         return self._get_obs(), {}
-
-
-    def _fill_column_major(self, num_rows, num_elements):
-        """
-        Returns the indices, as a list, of the elements that are going to be filled in column-major order
-        a, b, c
-        d, e, f   ->   num_elements = 2   ->   returns [[0,0], [1,0]] (a and d)
-        g, h, i 
-        """
-        active_cols = (num_elements // num_rows) if num_elements % num_rows == 0 else (num_elements // num_rows + 1)
-        positions = []
-        for j in range(active_cols):
-            for i in range(num_rows):
-                positions.append([i, j])
-        positions = positions[:num_elements]
-        return positions
-
-    
-    def _get_obs(self):
-        # The actual state representation
-        active_id = self.current_crate_index
-    
-        if active_id >= self.num_crates:
-            active_id = self.num_crates - 1
-            
-        return {
-            'active_crate_id': np.int32(active_id),
-            'crate_positions': np.array(self.crates, dtype=np.int32)
-        }
         
 
     def step(self, action):
@@ -121,11 +129,11 @@ class WarehouseEnv(gym.Env):
         crate_pos = self.crates[self.current_crate_index]
         x, y = crate_pos
 
-        move = {
-            0: (-1, 0), 
-            1: (1, 0), 
-            2: (0, -1), 
-            3: (0, 1)
+        move  = {
+            Actions.UP: (-1, 0), 
+            Actions.DOWN: (1, 0), 
+            Actions.LEFT: (0, -1), 
+            Actions.RIGHT: (0, 1)
         }[action]
         
         new_x, new_y = x + move[0], y + move[1]
@@ -135,7 +143,7 @@ class WarehouseEnv(gym.Env):
         # Two types of obstacles aside from walls:
         ## 1. Crates that have already reached a goal and have become frozen
         ## 2. Crates that have not reached a goal yet and are NOT currently being controlled,
-        ##    i.e. the ones that have being spawned and are stationary, waiting for their turn
+        ##    i.e. the ones that have been spawned and are stationary, waiting for their turn
         obstacles = self.frozen_crates + [
             pos for i, pos in enumerate(self.crates) if i != self.current_crate_index
         ]
@@ -148,10 +156,9 @@ class WarehouseEnv(gym.Env):
         ):
             return self._get_obs(), -10, False, False, {}
         
-
     # Valid move:
     
-        # Update crate location
+        # Update active crate location
         self.crates[self.current_crate_index] = [new_x, new_y]
 
         # If we land on the correct goal:
@@ -161,13 +168,16 @@ class WarehouseEnv(gym.Env):
             self.remaining_goals.remove(self.current_crate_goal)
             self.current_crate_index += 1
 
+            # If we finished all the crates: terminate, else continue with the next crate
             if self.current_crate_index >= self.num_crates:
                 terminated = True
                 return self._get_obs(), self.reward, terminated, truncated, {}
+            
             else:
                 self.current_crate_goal = self.goal_positions[self.current_crate_index]
                 return self._get_obs(), self.reward, terminated, truncated, {}
 
+        # else we just made a movement-only step (no goal, no obstacles)
         return self._get_obs(), -1, terminated, truncated, {}
 
 
