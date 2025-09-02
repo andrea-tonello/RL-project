@@ -28,13 +28,13 @@ class TDControl_Agent():
         self.gamma = gamma
         self.alpha = lr
         
-        # Q-table is a defaultdict to dinamycally allocate states
+        # Q-table is a defaultdict since the theoretical state space size can be massive
         self.Qvalues = defaultdict(lambda: np.zeros(self.action_size))  # ["key"](0,0,0,0)
     
     def single_step_update_SARSA(self, s, a, r, new_s, new_a, done):
         """
         Uses a single step to update the values, using Temporal Difference for Q values.
-        Employs the EXPERIENCED action in the new state  <- Q(S_new, A_new).
+        Employs the EXPERIENCED action in the new state <- Q(S_new, A_new).
         """
         s_key = state_to_key(s)
         new_s_key = state_to_key(new_s)
@@ -86,7 +86,8 @@ class TDControl_Agent():
     
     def get_q_values(self, state):
         """
-        Get q-values for the given state, 0 if not visited
+        Get q-values for the given state, 0 if not visited.
+        This method is required for plot purposes in plot_utils.
         """
         s_key = state_to_key(state)
         return self.Qvalues.get(s_key, np.zeros(self.action_size))
@@ -175,7 +176,7 @@ class QNetwork(nn.Module):
     def forward(self, x):
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
-        x = x.view(x.size(0), -1) # flatten
+        x = x.view(x.size(0), -1)
         x = F.relu(self.fc1(x))
         return self.fc2(x)
 
@@ -264,7 +265,8 @@ class DQN_Agent():
 
     def get_q_values(self, state):
         """
-        Get q-values from the network for the given state
+        Get q-values from the network for the given state.
+        This method is required for plot purposes in plot_utils.
         """
         with torch.no_grad():
             state_tensor = state_to_tensor(state, self.env).to(self.device)
