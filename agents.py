@@ -229,19 +229,17 @@ class DQN_Agent():
             return # Do not learn if the replay buffer is not at least == to the batch size: just explore
 
         transitions = self.buffer.sample(self.batch_size)
-        batch = Transition(*zip(*transitions))
+        batch = Transition(*zip(*transitions))      # Transition( (s1, s2), (a1, a2), ... )
 
-        # Convert the batches into tensors
+        # To tensor
         state_batch = torch.cat(batch.state).to(self.device)
         action_batch = torch.cat(batch.action).to(self.device)
         reward_batch = torch.cat(batch.reward).to(self.device)
         next_state_batch = torch.cat(batch.next_state).to(self.device)
         done_batch = torch.cat(batch.done).to(self.device)
 
-        # Compute Q(s, a) values predicted by the network
+        # Predicted and target values:
         q_values = self.policy_net(state_batch).gather(1, action_batch)
-
-        # Compute Q(s', a) using the target network
         next_q_values = self.target_net(next_state_batch).max(1)[0].detach()
         
         # Compute the expected Q values with the usual formula
