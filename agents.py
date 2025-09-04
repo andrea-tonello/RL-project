@@ -197,7 +197,7 @@ class DQN_Agent():
         self.policy_net = QNetwork(h, w, self.n_actions).to(device)
         self.target_net = QNetwork(h, w, self.n_actions).to(device)
         self.target_net.load_state_dict(self.policy_net.state_dict())
-        self.target_net.eval() # Target network is for evaluation only
+        self.target_net.eval() # Target network is for evaluation only of course
 
         self.optimizer = optim.Adam(self.policy_net.parameters(), lr=lr)
         self.buffer = ReplayBuffer(buffer_size)
